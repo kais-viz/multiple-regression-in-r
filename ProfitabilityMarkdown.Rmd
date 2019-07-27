@@ -1,0 +1,330 @@
+---
+title: "Profitability Prediction using R"
+author: "Kais Kawar"
+date: "18 April 2019"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: lumen
+---
+```{r include=FALSE}
+#Loading needed libraries
+if(!require(pacman)) install.packages("pacman")
+p_load(ggplot2, caret, readr, mlbench, bda, zoo, knitr, dplyr, corrplot, reshape2, e1071, pander, kableExtra)
+```
+###Business Question
+The task is to redo the profitability prediction analysis, but this time using R. 
+We are given four product types, and we need to find the predicted volumes for each of those types. Then we need to assess the impact services reviews and customer reviews have on sales of different product types.
+
+###Preprocessing Data
+We need to clean our data from any missing values or inconsistent data format in our features. It will also be required to create dummy data for our Product.Type feature to convert it from categorical to numerical attribute.
+Feature selection and engineering happens in this step as well.
+
+
+```{r include=FALSE}
+#read file
+existingDf <- read.csv("data/existingproductattributes2017.csv")
+
+#creating dummy vars
+tempdf <- dummyVars(" ~ .", data = existingDf)
+existingData <- data.frame(predict(tempdf, newdata = existingDf))
+
+#correlation matrix to understand the relationship between the features
+cor(existingData)
+```
+In order to choose the features in the model, a correlation matrix was created in order to see the relationship of all the features with one another. This was done after creating dummy features for each product type as the correlation matrix only works on numerical features. We got the outcome in a table format (hidden, too big). 
+We can see that x5StarReviews is perfectly correlated with the Volume, this is not good as it will overfit the model and needs further investigation as reviews can vary greatly.
+We also see that 4starreviews is also correlated along with positiveservicereview.
+This is why we featured engineered sumReviews which includes highly correlated features but are not collinear with any other features.
+
+```{r}
+#creating new variable sumReviews
+existingData$sumReviews <- rowSums(existingData[,c("x5StarReviews", 
+                                                   "x4StarReviews", 
+                                                   "x3StarReviews", 
+                                                   "x2StarReviews", 
+                                                   "x1StarReviews")])
+
+#scatterplot showing a clear positive correlation between sumReviews and Volume
+ggplot(data = existingData, aes(x=sumReviews, y=Volume))+
+  geom_point()+
+  geom_smooth()
+```
+
+Next, I had to find if my data contains any outliers
+```{r}
+#save outliers and remove the rows with outliers
+filteredCols <- select(existingData, c(29,30,20,21,"ProductType.Netbook"))
+
+boxplot <-boxplot(filteredCols,
+        main = "Multiple boxplots for comparision",
+        names = c("Volume", "SumRev", "PosRev", "NegRev",
+                  "ProdType.Netbook"),
+        par(cex.axis=0.8),
+        las=2)
+```
+
+From the boxplot, we can see that volume has 2  big outliers compared to all the other features. In order to have closer predictions, we opt to remove those 2 outliers and clean our data.
+```{r}
+
+outliers <- boxplot(existingData$Volume, plot=FALSE)$out
+existingData <- existingData[-which(existingData$Volume %in% outliers),]
+
+
+
+#loading r files (to minimize the rmd file size)
+read_chunk('models.R')
+read_chunk('parameterTables.R')
+```
+
+###Algorithms tried
+####k-NN Model
+K nearest neighbor algorithm is very simple. It works based on minimum distance from the query instance to the training samples to determine the K-nearest neighbors. After we gather K nearest neighbors, we take simple majority of these K-nearest neighbors to be the prediction of the query instance. That's why it's good in small datasets, doesn't need a huge number of observations to create a good model
+
+####Random Forest
+Random Forests or random decision forests are an ensemble learning method for classification, regression and other tasks that operates by constructing a multitude of decision trees at training time and outputting the class that is the mode of the classes (classification) or mean prediction (regression) of the individual trees. It is good against overfitting due to the randomness of the algorithm.
+
+####Support Vector Machines
+SVMs are supervised learning models with associated learning algorithms that analyze data used for classification and regression analysis. Given a set of training examples, each marked as belonging to one or the other of two categories, an SVM training algorithm builds a model that assigns new examples to one category or the other, making it a non-probabilistic binary linear classifier (although methods such as Platt scaling exist to use SVM in a probabilistic classification setting). A SVM model is a representation of the examples as points in space, mapped so that the examples of the separate categories are divided by a clear gap that is as wide as possible. New examples are then mapped into that same space and predicted to belong to a category based on which side of the gap they fall.
+
+###Creating a Linear model
+The aim of linear regression is to model a continuous variable (Volume) as a mathematical function of one or more X variable(s), so that we can use this regression model to predict the Volume when only the X variables are known.
+```{r modelNetbook}
+```
+####Sample of the Cases done {.tabset .tabset-fade}
+Below are a few cases where the regression model is used on the training set and testing set in order to find the best performing model for each Product type.
+
+#####RF Netbook
+```{r warning=FALSE}
+rfControl <- trainControl(method = "repeatedcv", 
+                          number = 10, 
+                          repeats = 3, 
+                          search="random")
+
+#rfGrid <- expand.grid(mtry=c(9,10,11,12,13))
+
+#Set seed to know the random order
+set.seed(33)
+
+#Creating RF model
+rfModel <- train(Volume~., data = training, 
+                 method = "rf",
+                 trControl=rfControl, 
+                 #tuneGrid=rfGrid, 
+                 #classProbs = TRUE,
+                 tuneLength=4, 
+                 importance=T)
+
+#view model
+rfModel
+
+#varimp
+varImp(rfModel)
+
+#predict on testing
+pred <- predict(rfModel, newdata = testingLimited)
+#summary(pred)
+
+postResample(pred, testingLimited$Volume)
+```
+#####kNN-Netbook
+```{r warning=FALSE}
+knnControl <- trainControl(method = "repeatedcv", 
+                           number = 10, 
+                           repeats = 3,
+                           classProbs = TRUE)
+#always set seed before running models, to be able to recreate it
+set.seed(998)
+knnModel <- train(Volume ~., data = training, method = "knn",
+                  knnControl=knnControl,
+                  tuneGrid = expand.grid(k = c(1:20)),
+                  tuneLength = 10,
+                  importance = T)
+
+
+
+#Run model and show output
+knnModel
+
+#importance of each attribute
+varImp(knnModel)
+
+#predict on testing
+pred <- predict(knnModel, newdata = testingLimited)
+summary(pred)
+
+postResample(pred, testingLimited$Volume)
+```
+#####SVM Netbook
+```{r warning=FALSE}
+SVMControl <- trainControl(method = "repeatedcv", 
+                           number = 10, 
+                           repeats = 3,
+                           search="random")
+SVMgrid <- expand.grid(C = c(1,5,10,18,50))
+
+#Set seed to know the random order
+set.seed(150)
+
+SVMModel <- train(Volume ~., data = training, method = "svmLinear",
+                  trControl=SVMControl,
+                  tuneGrid = SVMgrid)
+
+#Run model and show output
+SVMModel
+
+#importance of each attribute
+varImp(SVMModel)
+
+#predict on testing set
+pred <- predict(SVMModel, newdata = testingLimited)
+postResample(pred, testingLimited$Volume)
+
+```
+####
+
+####Cases done based on Product.Type: {.tabset .tabset-fade}
+#####Netbook
+```{r echo = FALSE, results = 'asis', tableNetbook}
+```
+#####PC
+```{r echo = FALSE, results = 'asis', tablePC}
+```
+#####Laptop
+```{r echo = FALSE, results = 'asis', tableLaptop}
+```
+#####Smartphone
+```{r echo = FALSE, results = 'asis', tableSmartphone}
+```
+
+The best regression model for each product type is Random Forest. It was the best model in predicting specific product type, this is because of the randomness and the bagging method it utilizes when constructing the trees.
+Support Vector machine performed slightly worse because it needs a bigger dataset in order to reduce error during training. As for kNN, if the dataset was slightly noisy (and this one was) it will confuse the model and the prediction error on our testing set will be higher.
+
+####
+
+###Predicting the volume for each product type
+```{r include=FALSE}
+#loading new products, applying preprocessing on them
+newDf <- read.csv("data/newproductattributes2017.csv")
+tempdf <- dummyVars(" ~ .", data = newDf)
+newData <- data.frame(predict(tempdf, newdata = newDf))
+newData$sumReviews <- rowSums(newData[,c("x5StarReviews", "x4StarReviews", "x3StarReviews", "x2StarReviews", "x1StarReviews")])
+```
+
+```{r include=FALSE, rfNetbook}
+```
+```{r include=FALSE, rfPC}
+```
+```{r include=FALSE, rfLaptop}
+```
+```{r include=FALSE, rfSmartphone}
+```
+```{r include=FALSE, rfModels}
+```
+
+```{r}
+#load allpredictions file
+allpredictions <- read.csv("data/predictedvolumes.csv")
+
+#adding col
+existingDf[c("dataStatus")] <- "Old"
+allpredictions[c("dataStatus")] <- "New"
+
+commonCols <- intersect(names(allpredictions), names(existingDf)) 
+allData <-rbind(allpredictions[commonCols], existingDf[commonCols]) 
+
+allData$sumReviews <- rowSums(allData[,c("x5StarReviews", 
+                                                   "x4StarReviews", 
+                                                   "x3StarReviews", 
+                                                   "x2StarReviews", 
+                                                   "x1StarReviews")])
+
+filteredProducts <- subset(allData, ProductType=="Laptop" | ProductType=="PC" | ProductType=="Smartphone" | ProductType=="Netbook")
+
+summary(filteredProducts)
+```
+###Distribution of predictions compared to existing data
+We can see a wide variance of predictions, not particularly similar to our existing data. In order to verify that our predictions are correct, we need to look at the data tables and check the predictions.
+```{r}
+#new var to change the wording in legend of ggplot
+status <- factor(filteredProducts$dataStatus)
+#ploting the distribution of errors compared to the rest of the data
+ggplot(data=filteredProducts) +
+  geom_point(mapping =aes(x=ProductType, y=Volume, color=status))
+
+
+
+metrics <- data.frame(filteredProducts$ProductType, filteredProducts$Volume, filteredProducts$dataStatus, filteredProducts$sumReviews, filteredProducts$PositiveServiceReview, filteredProducts$NegativeServiceReview)
+metrics <- metrics[with(metrics, order(filteredProducts.ProductType, filteredProducts.Volume, filteredProducts.dataStatus)), ]
+
+rownames(metrics) <- NULL 
+rownames(metrics) <- seq(length=nrow(metrics)) 
+```
+
+
+```{r include=FALSE}
+
+laptop <- metrics[1:6,]
+rownames(laptop) <- NULL
+netbook <- metrics[7:12,]
+rownames(netbook) <- NULL
+pc <- metrics[13:18,]
+rownames(pc) <- NULL
+smartphone <- metrics[19:26,]
+rownames(smartphone) <- NULL
+
+```
+####Product Type Prediction Analysis {.tabset .tabset-fade}
+The table below shows the main features and how they are affecting the volume.
+
+#####Laptop 
+```{r echo = FALSE, results = 'asis'}
+kable(laptop, col.names = c("ProductType", "Volume", "Status", "Sum Reviews", "Positive Service Review", "Negative Service Review"),padding=-3L) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F, position = "left")
+```
+
+#####Netbook
+```{r}
+kable(netbook, col.names = c("ProductType", "Volume", "Status", "Sum Reviews", "Positive Service Review", "Negative Service Review"),padding=-3L) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F, position = "left")
+```
+
+#####PC
+```{r}
+kable(pc, col.names = c("ProductType", "Volume", "Status", "Sum Reviews", "Positive Service Review", "Negative Service Review"),padding=-3L) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F, position = "left")
+```
+
+#####Smartphone
+```{r}
+kable(smartphone, col.names = c("ProductType", "Volume", "Status", "Sum Reviews", "Positive Service Review", "Negative Service Review"),padding=-3L) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),fixed_thead = T, full_width = F, position = "left")
+```
+####
+
+Whenever we have high customer and service reviews, the higher the volume is. 3, 4 and 5 star reviews as well as positive service reviews are our main volume influences based on the correlation matrix we created earlier in the report.
+
+###Assessing the Impact of Customer & Service Reviews on sales of different product type
+Checking the correlation for each of the product types, we find a consistent relationship between total customer reviews and service reviews with the volume. This means whenever we have a lot of reviews on an item, the odds of selling increase. 
+Looking at the table above, we can clearly notice higher volumes for products with higher reviews. Also 4 and 5 stars have a bigger effet on volumes than 1 and 2 stars.
+
+###Conclusions
+
+* Random Forest performed the best compared to the other regression models. This is because RF uses a randomized bagging technique which is very effective against over-fitting. 
+In order to optimize the model, I changed the set.seed() number a few times until I found the best randomized set of trees (forest). 
+The support vector machine model performed poorly due to the low number of observation in our data, as it needs higher training sample to give better output.
+Our kNN model performed the poorest; this is because we had a very small sample size with high number of features (5). It performs better with lower number of features.
+* Positive impact for customer and service reviews; when they both go up, the demand on the product goes up. But the weight of positive service review and 4/5 star reviews is much bigger than negative and lower star reviews.
+* Clear correlation between volume and total customer reviews
+* Removed two outliers found in Volume: 11204 and 7036
+* Top 5 product types by profitability are:
+    1. PC - 80385
+    2. Laptop - 61748.5
+    3. PC - 51084
+    4. Netbook - 34969.41
+    5. Laptop - 17471.26
+
+
